@@ -1,0 +1,61 @@
+{
+  "_comment": "MechrevoChargeControl profile/encoding table. VERIFIED on this machine (WUJIE14SE, 2026-09-09) via instance-based calibration.",
+  "verified": true,
+  "verifiedVia": "probe2-elevated.ps1 -AllowCalibration on ACPI\\PNP0C14\\HWMI_0 (admin).",
+  "encodingConfirmed": {
+    "channel": "EmdAcpi_BatteryChargeRationing::SetBatteryChargeRationing(Data)",
+    "dataMeaning": "Data == charge cap percent (plain uint64, 0..100). 0 = limit inactive (charge to 100%).",
+    "calibrationEvidence": "Set 100 -> Get read back 0x64630000 (contains 0x64=100). Set 0 -> Get read back 0xFF0000 (0xFF = inactive marker byte, limit byte 0). before both writes: 0x0.",
+    "callStyle": "methods MUST be invoked through WMI instance ACPI\\PNP0C14\\HWMI_0 (class-level calls rejected). instance enumeration requires admin.",
+    "observedWindowCap": "1..100 accepted by firmware readback; community range on WUJIE14XA: 60..100 verified in field, <60 untested there.",
+    "liveTest20260909": "Set 80% with AC adapter: charged at ~29 W until ~79% (OS rounding of 80), then charge rate dropped to 0 mW and percent parked ~79-80. charging flag stayed True while rate=0 - exactly the 'EC hides real charging state when a limit is active' behaviour documented in kernel docs; current/rate is the reliable indicator. Gate works on this unit (no WUJIE14XA stored-limit bug observed).",
+    "modeChannelStatus": "EmdAcpi_Battery_Charge_Mode::Battery_Charge_Mode(Data 0/1/2) NOT yet write-tested (would switch charging profile on 0x07A6). Leave inactive unless needed."
+  },
+  "interface": {
+    "namespace": "root\\WMI",
+    "classes": {
+      "ChargeMode":      { "ClassName": "EmdAcpi_Battery_Charge_Mode",      "Guid": "666d92bd-f6e0-4979-9b9f-0436a9a379d0", "Methods": { "SetMode": "Battery_Charge_Mode" } },
+      "ChargeRationing": { "ClassName": "EmdAcpi_BatteryChargeRationing",   "Guid": "6B40A935-7FEF-42b6-B08D-6C79B57D6C35", "Methods": { "Get": "GetBatteryChargeRationing", "Set": "SetBatteryChargeRationing" } },
+      "BatteryInfo":     { "ClassName": "EmdAcpi_BatteryInfo",              "Guid": "6377F67E-DA51-45F6-8898-33EF5F1F5A16", "Methods": { "Basic": "GetBatteryBasicInfo", "Realtime": "GetBatteryRealtimeInfo", "Life": "GetBatteryLifecapacity" } },
+      "ECInfo":          { "ClassName": "EmdAcpi_ECInformation",            "Guid": "861F913E-1B25-41E5-B4DD-D1FD9091713F", "Methods": { "EcVersion": "GetEcVersion", "PdVersion": "GetPdVersion", "CpuTemp": "GetCpuTemperature" } }
+    }
+  },
+  "_officialEnumFromGCUService": "Static reflection of GCUService.exe (namespace GCUService.MySystem). Health status and command values come from compiled enums, so these are NOT guesses.",
+  "official": {
+    "healthStatus": { "0": "PERFORMANCE / Long-life (charge to full)", "1": "BALANCED (current value on this machine)", "2": "HEALTHY / Workstation" },
+    "batteryCommands": {
+      "GET": 0, "CHARGING_UP_LIMIT": 1, "CHARGING_DOWN_LIMIT": 2, "RECOVERY": 3,
+      "TYPE_C_ADAPTOR_PRIORITY_SWITCH_ON": 4, "TYPE_C_ADAPTOR_PRIORITY_SWITCH_OFF": 5
+    },
+    "implClass": "GCUService.MySystem.BatteryProtection2",
+    "implMethods": ["SetHealthProtectionStatus","SetHealthProtectionHigh","SetHealthProtectionMiddle","SetHealthProtectionLow","SetBatteryChargingLimit_Up","ReadBatteryChargingLimit_Up","SetBatteryChargingLimit_Down","ReadBatteryChargingLimit_Down","EnableByService","Receive"],
+    "ecIoLayers": { "MyEcCtrl": "EC access (GPD-driver IOCTLs: IOCTL_GPD_ACPI_ECREAD/ECWRITE etc.)", "WMIEC": "WMI EC-RAM read/write helper" },
+    "registryPath": "HKLM\\SOFTWARE\\OEM\\GamingCenter2\\BatteryProtection2"
+  },
+  "_registerModelEvidence": "Confirmed by mainline Linux drivers/platform/x86/uniwill/uniwill-acpi.c (read in full).",
+  "ec": {
+    "access": { "acpiDevice": "INOU0000", "readMethod": "ECRR(reg)", "writeMethod": "ECRW(reg,val)", "delayAfterAccessMs": 6 },
+    "registers": {
+      "0x07A6": { "name": "OEM_4 charging profile", "mask": "bits5:4", "values": { "0": "HIGH_CAPACITY/full", "1": "BALANCED", "2": "STATIONARY" }, "note": "bit6 of same byte is touchpad toggle - never overwrite whole byte" },
+      "0x07B9": { "name": "CHARGE_CTRL (charge up-limit)", "mask": "bits6:0 = percent 1..100", "bit7": "limit reached", "note": "0 means inactive; reads of 0 treated as 100. Community range on WUJIE14XA: 60..100." },
+      "0x07C3": { "name": "state/recovery trigger (community)", "note": "WUJIE14XA workaround: temporarily write 0x04 ~2s then restore, to force stored-limit sync" },
+      "0x0742": { "name": "gate/support register (community)", "note": "bit2 set (value & 0x04) => charge-limit gate enabled; mainline calls this EC_ADDR_SUPPORT_5 (bits4/5 fan flags)" }
+    },
+    "chargeLimitBug": {
+      "appliesTo": "Mechrevo WUJIE14XA family EC (stored-limit gate). Fixed by BIOS/EC >= N.1.14MRO19 (EC 2.08) or N.1.14MRO50 (EC 2.12).",
+      "appliesToThisMachine": "unknown - BIOS here is WUJIE14SE_SE4_APX336_7445HS Rev04 (newer platform, EC version unverified)",
+      "warningSource": "Linux kernel docs: threshold interface is broken on some devices and forcing it may damage the battery; kernel never enables charge-limit under force, charge profiles only."
+    }
+  },
+  "_encodingHypotheses": "H1: Data word == plain small integer. For SetBatteryChargeRationing likely percent 1..100 (mirrors 0x07B9). For Battery_Charge_Mode likely 0/1/2 (mirrors 0x07A6 profile) or percent. UNVERIFIED at the WMI layer - confirm with the elevated probe.",
+  "profiles": {
+    "Full":       { "label": "Full / Long-life (100%)",      "officialStatus": 0, "modeWordH1": 0, "percent": 100 },
+    "Balanced":   { "label": "Balanced (~80-85%)",           "officialStatus": 1, "modeWordH1": 1, "percent": 80 },
+    "Stationary": { "label": "Stationary / Workstation",     "officialStatus": 2, "modeWordH1": 2, "percent": 60 }
+  },
+  "oem": {
+    "registryKey": "HKLM:\\SOFTWARE\\OEM\\GamingCenter2\\BatteryProtection2",
+    "statusValue": "HealthProtectionStatus",
+    "typecPriorityValue": "TypeCAdaptorPriorityStatus"
+  }
+}

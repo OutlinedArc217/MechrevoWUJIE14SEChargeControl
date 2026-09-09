@@ -1,0 +1,11 @@
+# machine-local / runtime files - do not commit
+config/autocap.txt
+config/*.log
+config/probe-*.json
+config/lastProbe.json
+config/cc-set-*.log
+
+# general
+*.tmp
+Thumbs.db
+.DS_Store
