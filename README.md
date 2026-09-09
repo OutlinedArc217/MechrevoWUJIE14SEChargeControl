@@ -1,4 +1,4 @@
-# MechrevoChargeControl — 机械革命(WUJIE 系列等)电池充电控制工具
+# MechrevoChargeControl — 机械革命(WUJIE 14SE)电池充电控制工具
 
 > 针对官方"机械革命控制中心"对部分机型(如本机 WUJIE 14 / AMD 7445HS)不提供
 > 实际充电控制的"空壳"问题,设计的一套**直接调用固件 ACPI-WMI 充电接口**的
@@ -150,16 +150,3 @@ powershell -ExecutionPolicy Bypass -File .\tools\install-auto-cap.ps1 -Uninstall
 - 每次执行由 `src/apply-cap.ps1` 完成:延迟 20s(等 EC/官方服务就绪)→ `SetBatteryChargeRationing(值)` → 读回 → 记日志 `%ProgramData%\MechrevoChargeControl\logs\apply-cap.log`;
 - 提示:装机任务指向仓库内脚本路径,**移动/改名仓库后请重跑一次安装命令**。
 
-## 9. 开源发布(GitHub)说明
-
-- 本仓库代码/文档均为纯文本与 PowerShell,无密钥、无机器标识外的敏感数据;`config/autocap.txt`、日志与探测输出已被 `.gitignore` 排除;
-- 发布前建议自查:确认 `FORENSICS.md`/`README.md` 中提到的本机序列号等标识性信息是否要保留(当前文档未含序列号);
-- 快速初始化:
-```powershell
-git init
-git add .
-git commit -m "Mechrevo/Uniwill ACPI-WMI battery charge control toolkit"
-git branch -M main
-git remote add origin https://github.com/<你>/<仓库>.git
-git push -u origin main
-```
