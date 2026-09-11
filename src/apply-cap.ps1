@@ -1,17 +1,30 @@
 # =============================================================================
-#  apply-cap.ps1 - silently apply the configured charge cap (percent)
+#  apply-cap.ps1 - apply (and optionally watchdog) the configured charge cap
 #
-#  Intended to run from a scheduled task (as SYSTEM / elevated, hidden window)
-#  so the cap is re-applied on every boot/logon without any UAC prompt.
+#  Intended to run from a scheduled task (SYSTEM, hidden) so the cap survives
+#  EC resets and OEM-services overwriting it after boot - no UAC prompt.
 #
 #  Cap source of truth (highest priority):
 #      <project>\config\autocap.txt     single integer 0..100
 #  Falls back to the -Percent parameter, then to 80.
 #
-#  Requires admin (the scheduled task provides it). Writes a log to
-#  %ProgramData%\MechrevoChargeControl\logs\apply-cap.log. Exit code 0 = ok.
+#  Parameters
+#    -DelaySeconds           wait before the first write (let EC/OEM settle)
+#    -RepeatCount            how many times to (re)apply  (default 1)
+#    -RepeatIntervalSeconds  pause between repeats        (default 60)
+#
+#  Every iteration logs: pre-readback, SET result, post-readback. If a later
+#  readback differs from the first successful one it is flagged (external
+#  override / EC reset).
+#
+#  Requires admin (the scheduled task provides it). Exit 0 = last write ok.
 # =============================================================================
-param([int]$Percent = 80, [int]$DelaySeconds = 20)
+param(
+    [int]$Percent = 80,
+    [int]$DelaySeconds = 20,
+    [int]$RepeatCount = 1,
+    [int]$RepeatIntervalSeconds = 60
+)
 
 $ErrorActionPreference = 'Stop'
 $srcDir   = Split-Path $MyInvocation.MyCommand.Path -Parent
@@ -28,9 +41,9 @@ function Write-LogLine {
     try { Add-Content -Path $logFile -Value ("{0}  {1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $M) -Encoding UTF8 -ErrorAction SilentlyContinue } catch { }
 }
 
-Write-LogLine "apply-cap start (pid $PID)"
+Write-LogLine ("apply-cap start (pid $PID, delay=$DelaySeconds, repeat=$RepeatCount, interval=${RepeatIntervalSeconds}s)")
 
-# authoritative value from config file if present
+# ---- resolve target value (config file wins) -------------------------------
 $value = $null
 if (Test-Path $cfgFile) {
     try {
@@ -44,7 +57,6 @@ if (Test-Path $cfgFile) {
 if ($null -eq $value) { $value = $Percent }
 Write-LogLine "cap target = $value (source: $(if(Test-Path $cfgFile){'config\autocap.txt'}else{'parameter default'}))"
 
-# give GCUService / EC a moment to settle on boot
 if ($DelaySeconds -gt 0) { Start-Sleep -Seconds $DelaySeconds }
 
 Import-Module $module -Force
@@ -54,25 +66,38 @@ if (-not (Test-IsAdministrator)) {
     exit 2
 }
 
-try {
-    $r = Set-EmdChargeRationing -Data ([uint64]$value) -Force
-    if ($r.Ok) {
-        Write-LogLine "SET rationing = $value OK (rv=$($r.ReturnValue))"
-    } else {
-        Write-LogLine "SET rationing = $value FAILED: $($r.Error)"
-        exit 3
+$firstReadback = $null
+$lastOk = $false
+
+for ($i = 1; $i -le [Math]::Max(1, $RepeatCount); $i++) {
+    try {
+        $pre = Invoke-EmdMethod -ClassName 'EmdAcpi_BatteryChargeRationing' -MethodName 'GetBatteryChargeRationing' -Data ([uint64]0)
+        $preHex = if ($pre.Ok -and $null -ne $pre.DataOut) { '0x{0:X}' -f $pre.DataOut } else { "ERR($($pre.Error))" }
+
+        $r = Set-EmdChargeRationing -Data ([uint64]$value) -Force
+        Start-Sleep -Milliseconds 300
+        $post = Invoke-EmdMethod -ClassName 'EmdAcpi_BatteryChargeRationing' -MethodName 'GetBatteryChargeRationing' -Data ([uint64]0)
+        $postHex = if ($post.Ok -and $null -ne $post.DataOut) { '0x{0:X}' -f $post.DataOut } else { "ERR($($post.Error))" }
+
+        if ($null -eq $firstReadback -and $post.Ok) { $firstReadback = $postHex }
+
+        $note = ''
+        if ($null -ne $firstReadback -and $postHex -ne $firstReadback) {
+            $note = "  NOTE: readback changed vs first ($firstReadback) - possible external override/EC reset"
+        }
+        if ($r.Ok) {
+            Write-LogLine ("[$i/$RepeatCount] SET $value OK  pre=$preHex  post=$postHex$note")
+            $lastOk = $true
+        } else {
+            Write-LogLine ("[$i/$RepeatCount] SET $value FAILED: $($r.Error)  pre=$preHex")
+            $lastOk = $false
+        }
+    } catch {
+        Write-LogLine ("[$i/$RepeatCount] ERROR: $($_.Exception.Message)")
+        $lastOk = $false
     }
-    # read back for the log
-    Start-Sleep -Milliseconds 300
-    $g = Invoke-EmdMethod -ClassName 'EmdAcpi_BatteryChargeRationing' -MethodName 'GetBatteryChargeRationing' -Data ([uint64]0)
-    if ($g.Ok -and $null -ne $g.DataOut) {
-        Write-LogLine ("readback Get -> 0x{0:X}" -f $g.DataOut)
-    } else {
-        Write-LogLine "readback failed: $($g.Error)"
-    }
-    Write-LogLine 'apply-cap done (exit 0)'
-    exit 0
-} catch {
-    Write-LogLine "apply-cap ERROR: $($_.Exception.Message)"
-    exit 4
+    if ($i -lt $RepeatCount -and $RepeatIntervalSeconds -gt 0) { Start-Sleep -Seconds $RepeatIntervalSeconds }
 }
+
+Write-LogLine ("apply-cap done (lastOk=$lastOk)")
+if ($lastOk) { exit 0 } else { exit 3 }

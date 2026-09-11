@@ -132,21 +132,39 @@ powershell -ExecutionPolicy Bypass -File .\src\chargectl.ps1 watch -Seconds 1800
 
 **✅ 本机实测(2026-09-09,设 80%)**:充电功率 ~29 W → 电量 ~79–80%(OS 取整)时 `rate` 归零、百分比停住不再上升;`charging` 标志仍为 True 但电流为 0 —— 符合该系 EC"启用上限后向 OS 隐藏真实充电状态"的已知行为,**判断以电流/功率为准**。门控正常,无 14XA stored-limit bug。
 
-## 8. 🔁 开机自动应用上限(计划任务)
+## 8. 🔁 开机自动应用上限(计划任务·抗 EC 复位)
 
-某些同系 EC 在整机断电数分钟后会把上限重置回 100%。项目内置一个"每次开机/登录静默应用上限"的计划任务(以 SYSTEM 运行,无窗口、无 UAC):
+同系 EC 在整机断电/重启后可能把上限重置回 100%,官方服务开机也可能改写状态。项目内置**两个**计划任务(均以 SYSTEM 运行,无窗口、无 UAC):
+
+| 任务 | 触发 | 行为 |
+| --- | --- | --- |
+| `MechrevoChargeCap` | 开机 + 登录 | 应用上限后,在 **15 分钟内每 60 秒重新应用一次**(看门狗,抵御 EC 复位/官方服务改写) |
+| `MechrevoChargeCap-Keep` | 每 3 小时 | 单次重新应用(长期自愈) |
 
 ```powershell
-# 1) 安装(自提权,仅首次弹一次 UAC → 是),默认 80%
+# 1) 安装(自提权,仅首次弹一次 UAC → 是),默认 80%;装完立即应用一次
 powershell -ExecutionPolicy Bypass -File .\tools\install-auto-cap.ps1 -Percent 80
-# 2) 查看状态 / 最近执行结果与日志
+# 2) 查看两个任务状态 + 最近执行结果 + 日志尾部
 powershell -ExecutionPolicy Bypass -File .\tools\install-auto-cap.ps1 -Status
-# 3) 卸载
+# 3) 卸载(两个任务一起移除)
 powershell -ExecutionPolicy Bypass -File .\tools\install-auto-cap.ps1 -Uninstall
 ```
 
 机制说明:
-- 目标值持久化在 `config/autocap.txt`(单个整数 0–100;0 = 阈值未激活);装好后直接改这个文件,下次开机即按新值执行,无需重装任务;
-- 每次执行由 `src/apply-cap.ps1` 完成:延迟 20s(等 EC/官方服务就绪)→ `SetBatteryChargeRationing(值)` → 读回 → 记日志 `%ProgramData%\MechrevoChargeControl\logs\apply-cap.log`;
-- 提示:装机任务指向仓库内脚本路径,**移动/改名仓库后请重跑一次安装命令**。
+- 目标值持久化在 `config/autocap.txt`(单个整数 0–100;0 = 阈值未激活);**改这个文件即可改上限**,下次执行生效,无需重装任务;
+- 执行体 `src/apply-cap.ps1` 每轮记录 **pre-readback → SET → post-readback**,若读回值与首轮不一致会在日志里标注 `NOTE: readback changed ... possible external override/EC reset`,便于判断是否被外部改写;
+- 日志:`%ProgramData%\MechrevoChargeControl\logs\apply-cap.log`;
+- 提示:任务指向仓库内脚本路径,**移动/改名仓库后请重跑一次安装命令**。
+
+> 排查经验:若重启后仍充到 100%,先跑 `-Status` 看 `LastTaskResult` 与日志——最常见原因就是**任务没装**(此时 `config\autocap.txt`、任务、日志三者都不存在)。
+
+## 9. 更新与发布
+
+```powershell
+git add -A
+git commit -m "your message"
+git push
+```
+
+`.gitignore` 已排除机器本地产物(`config/autocap.txt`、`config/*.log`、探测输出 JSON 等);文档与代码可安全公开。
 
